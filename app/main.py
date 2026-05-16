@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+import socket
 from contextlib import asynccontextmanager
 import json
 import os
@@ -14,8 +15,25 @@ from app.core.printer_instance import printer
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    local_ip = get_local_ip()
+    print("\n" + "="*50)
+    print(" Wireless Print Server Running! ")
+    print(f" Local Access:   http://localhost:8000")
+    print(f" Network Access: http://{local_ip}:8000")
+    print("="*50 + "\n")
+
     # Register ONE global callback for telemetry + terminal (Bug #6 — O(N²) fix)
     async def on_telemetry(state_data):
         await telemetry_mgr.broadcast(json.dumps(state_data))
