@@ -350,15 +350,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Jogging — uses step selector and sends individual commands (Bug #11, #23)
+    // Jogging — debounced G91/G90 mode for responsive rapid clicking
+    let jogTimeout = null;
+    let isRelativeMode = false;
+
     document.querySelectorAll('.btn-jog').forEach(btn => {
         btn.addEventListener('click', () => {
             const axis = btn.dataset.axis;
             const dir = parseFloat(btn.dataset.dir);
             const step = parseFloat(jogStepSelect.value);
             const amount = dir * step;
-            // Send as single compound command to prevent interleaving on rapid clicks
-            sendCommand(`G91\nG1 ${axis}${amount} F3000\nG90`);
+
+            // Switch to relative mode only once
+            if (!isRelativeMode) {
+                sendCommand('G91');
+                isRelativeMode = true;
+            }
+
+            // Send just the move (1 command instead of 3)
+            sendCommand(`G1 ${axis}${amount} F3000`);
+
+            // Restore absolute mode after 500ms of no clicking
+            clearTimeout(jogTimeout);
+            jogTimeout = setTimeout(() => {
+                sendCommand('G90');
+                isRelativeMode = false;
+            }, 500);
         });
     });
     
