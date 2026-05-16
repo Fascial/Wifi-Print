@@ -5,8 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiofiles>=25.1.0",
     "fastapi>=0.136.1",
-    "pip>=26.1.1",
     "pyserial>=3.5",
     "python-multipart>=0.0.28",
     "uvicorn>=0.47.0",

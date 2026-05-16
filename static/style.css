@@ -356,8 +356,8 @@ header {
     .x-row { gap: 0.4rem; }
 
     /* ─ Terminal ─ */
-    .terminal-card { min-height: 220px; max-height: none; }
-    .terminal-window { min-height: 140px; font-size: 0.75rem; }
+    .terminal-card { height: 350px; max-height: 50vh; }
+    .terminal-window { min-height: 0; font-size: 0.75rem; }
     .terminal-input-bar input { font-size: 0.8rem; }
 }
 

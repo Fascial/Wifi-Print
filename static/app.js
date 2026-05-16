@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let availablePorts = [];
     let portPollInterval = null;
     let hasAttemptedAutoconnect = false;
+    let serverConfirmedDisconnected = false;
 
     // Initialization
     checkExistingConnection();
@@ -68,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     availablePorts = d.ports;
                 });
             } else {
+                serverConfirmedDisconnected = true;
                 fetchPorts();
                 startPortPolling();
             }
@@ -108,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // Autoconnect logic
-            if (!hasAttemptedAutoconnect && availablePorts.length > 0) {
+            if (!hasAttemptedAutoconnect && availablePorts.length > 0 && serverConfirmedDisconnected) {
                 hasAttemptedAutoconnect = true;
                 const savedPort = localStorage.getItem('savedPort');
                 const savedBaudrate = localStorage.getItem('savedBaudrate');
@@ -259,6 +261,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateUIState(stateData) {
         if (!stateData) return;
         
+        // Bug Fix: Sync frontend connection state if server disconnects unexpectedly (e.g. USB unplugged)
+        if (stateData.state === 'Disconnected' && isConnected) {
+            isConnected = false;
+            btnConnect.textContent = 'Connect';
+            btnConnect.classList.replace('danger', 'primary');
+            closeWebSockets();
+            startPortPolling();
+        }
+
         // State text and dot
         printerState.textContent = stateData.state;
         statusDot.className = 'pulse-dot'; 
