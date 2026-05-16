@@ -480,12 +480,13 @@ class PrinterController:
                 paused_so_far += time.time() - self._pause_start
             elapsed = time.time() - self.print_start_time - paused_so_far
 
-            # Simple ETA extrapolation
-            if progress > 1.0:  # Wait for at least 1% for stable extrapolation
+            # ETA: Prefer slicer estimate scaled by progress, fallback to extrapolation
+            if self.estimated_total_time and progress > 0:
+                eta = self.estimated_total_time * (1.0 - progress / 100.0)
+            elif progress > 5.0:
+                # Fallback: byte-based extrapolation (only after 5% to avoid startup noise)
                 total_extrapolated = (elapsed / progress) * 100
                 eta = total_extrapolated - elapsed
-            elif self.estimated_total_time:
-                eta = max(0, self.estimated_total_time - elapsed)
 
         return {
             "state": self.state,
