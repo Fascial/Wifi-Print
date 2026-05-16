@@ -4,7 +4,7 @@ echo Starting WiFi Print Controller...
 where uv >nul 2>&1
 if %ERRORLEVEL% == 0 (
     echo uv is installed. Using uv to run the server...
-    uv add fastapi uvicorn pyserial websockets python-multipart
+    uv sync
     uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     exit /b %ERRORLEVEL%
 )

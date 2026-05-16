@@ -1,4 +1,7 @@
 from fastapi import WebSocket
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ConnectionManager:
     def __init__(self):
@@ -9,14 +12,22 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        # Bug #10: Prevent ValueError if websocket not in list
+        try:
+            self.active_connections.remove(websocket)
+        except ValueError:
+            pass
 
     async def broadcast(self, message: str):
+        # Iterate over a copy to safely remove dead connections
+        dead = []
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
             except Exception:
-                pass
+                dead.append(connection)
+        for conn in dead:
+            self.disconnect(conn)
 
 telemetry_mgr = ConnectionManager()
 terminal_mgr = ConnectionManager()

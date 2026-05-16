@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Wireless Print</title>
+    <meta name="description" content="Remote 3D printer management dashboard — monitor temperature, control motion, and stream G-Code over WiFi.">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -130,25 +131,36 @@
             </div>
         </section>
 
-        <!-- Motion -->
+        <!-- Motion (Bug #21: consistent icons, Bug #23: step selector) -->
         <section class="glass-card motion-card">
             <h2>Motion</h2>
-            <div class="motion-flex-wrapper" style="display: flex; flex-direction: row; justify-content: space-around; align-items: center; width: 100%; gap: 1rem; flex: 1;">
+            <div class="jog-step-selector">
+                <label for="jog-step">Step:</label>
+                <select id="jog-step">
+                    <option value="0.1">0.1mm</option>
+                    <option value="1">1mm</option>
+                    <option value="10" selected>10mm</option>
+                    <option value="50">50mm</option>
+                </select>
+            </div>
+            <div class="motion-flex-wrapper">
                 <div class="d-pad">
-                    <button class="btn-jog" data-axis="Y" data-amount="10">Y+</button>
+                    <button class="btn-jog" data-axis="Y" data-dir="1">Y+</button>
                     <div class="x-row">
-                        <button class="btn-jog" data-axis="X" data-amount="-10">X-</button>
+                        <button class="btn-jog" data-axis="X" data-dir="-1">X-</button>
                         <button class="btn-home" id="btn-home-xy">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
                         </button>
-                        <button class="btn-jog" data-axis="X" data-amount="10">X+</button>
+                        <button class="btn-jog" data-axis="X" data-dir="1">X+</button>
                     </div>
-                    <button class="btn-jog" data-axis="Y" data-amount="-10">Y-</button>
+                    <button class="btn-jog" data-axis="Y" data-dir="-1">Y-</button>
                 </div>
                 <div class="z-pad">
-                    <button class="btn-jog" data-axis="Z" data-amount="10">Z+</button>
-                    <button class="btn-home" id="btn-home-z">Home Z</button>
-                    <button class="btn-jog" data-axis="Z" data-amount="-10">Z-</button>
+                    <button class="btn-jog" data-axis="Z" data-dir="1">Z+</button>
+                    <button class="btn-home" id="btn-home-z">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+                    </button>
+                    <button class="btn-jog" data-axis="Z" data-dir="-1">Z-</button>
                 </div>
             </div>
         </section>

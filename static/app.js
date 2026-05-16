@@ -27,6 +27,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const timeElapsed = document.getElementById('time-elapsed');
     const timeEta = document.getElementById('time-eta');
+
+    const jogStepSelect = document.getElementById('jog-step');
     
     // State
     let isConnected = false;
@@ -34,22 +36,60 @@ document.addEventListener('DOMContentLoaded', () => {
     let wsTerminal = null;
     let availablePorts = [];
     let portPollInterval = null;
+    let hasAttemptedAutoconnect = false;
 
     // Initialization
-    fetchPorts();
-    startPortPolling();
+    checkExistingConnection();
 
     // --- API Calls & Polling ---
 
+    async function checkExistingConnection() {
+        try {
+            const res = await fetch('/api/state');
+            const data = await res.json();
+            
+            if (data.state !== 'Disconnected') {
+                // Recover the existing connection session
+                isConnected = true;
+                btnConnect.textContent = 'Disconnect';
+                btnConnect.classList.replace('primary', 'danger');
+                
+                // Add the connected port to the select dropdown immediately
+                if (data.port) {
+                    portSelect.innerHTML = `<option value="${data.port}">${data.port}</option>`;
+                    portSelect.value = data.port;
+                }
+                
+                setupWebSockets();
+                updateUIState(data);
+                
+                // Fetch full port list in background silently
+                fetch('/api/ports').then(r => r.json()).then(d => {
+                    availablePorts = d.ports;
+                });
+            } else {
+                fetchPorts();
+                startPortPolling();
+            }
+        } catch (e) {
+            console.error("Failed to check state", e);
+            fetchPorts();
+            startPortPolling();
+        }
+    }
+
     async function fetchPorts() {
-        if (isConnected) return; // Stop polling if connected
+        if (isConnected) return; // Stop polling if connected (Bug #7)
         try {
             const res = await fetch('/api/ports');
             const data = await res.json();
             
+            // Double-check connection state after async fetch (Bug #7 TOCTOU fix)
+            if (isConnected) return;
+            
             if (JSON.stringify(data.ports) !== JSON.stringify(availablePorts)) {
                 availablePorts = data.ports;
-                const currentSelection = portSelect.value;
+                const currentSelection = portSelect.value || localStorage.getItem('savedPort');
                 portSelect.innerHTML = '';
                 
                 if (availablePorts.length === 0) {
@@ -61,9 +101,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         opt.textContent = port;
                         portSelect.appendChild(opt);
                     });
-                    if (availablePorts.includes(currentSelection)) {
+                    if (currentSelection && availablePorts.includes(currentSelection)) {
                         portSelect.value = currentSelection;
                     }
+                }
+            }
+
+            // Autoconnect logic
+            if (!hasAttemptedAutoconnect && availablePorts.length > 0) {
+                hasAttemptedAutoconnect = true;
+                const savedPort = localStorage.getItem('savedPort');
+                const savedBaudrate = localStorage.getItem('savedBaudrate');
+                
+                if (savedPort && availablePorts.includes(savedPort)) {
+                    portSelect.value = savedPort;
+                    if (savedBaudrate) baudSelect.value = savedBaudrate;
+                    toggleConnection();
                 }
             }
         } catch (e) {
@@ -73,7 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startPortPolling() {
         if (portPollInterval) clearInterval(portPollInterval);
-        portPollInterval = setInterval(fetchPorts, 2000);
+        portPollInterval = setInterval(fetchPorts, 3000); // Slightly slower to reduce log noise
     }
 
     function stopPortPolling() {
@@ -111,6 +164,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 btnConnect.disabled = false;
                 if (data.success) {
                     isConnected = true;
+                    
+                    // Save successful connection parameters
+                    localStorage.setItem('savedPort', port);
+                    localStorage.setItem('savedBaudrate', baudrate);
+                    
                     btnConnect.textContent = 'Disconnect';
                     btnConnect.classList.replace('primary', 'danger');
                     stopPortPolling();
@@ -128,27 +186,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- WebSockets ---
+    // --- WebSockets with reconnection (Bug #20) ---
 
     function setupWebSockets() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
         
+        connectTelemetryWS(protocol, host);
+        connectTerminalWS(protocol, host);
+    }
+
+    function connectTelemetryWS(protocol, host) {
+        if (wsTelemetry) {
+            try { wsTelemetry.close(); } catch(e) {}
+        }
         wsTelemetry = new WebSocket(`${protocol}//${host}/ws/telemetry`);
         wsTelemetry.onmessage = (event) => {
             const state = JSON.parse(event.data);
             updateUIState(state);
         };
-        
+        wsTelemetry.onclose = () => {
+            if (isConnected) {
+                console.warn('Telemetry WS closed, reconnecting in 2s...');
+                setTimeout(() => {
+                    if (isConnected) connectTelemetryWS(protocol, host);
+                }, 2000);
+            }
+        };
+        wsTelemetry.onerror = (e) => {
+            console.error('Telemetry WS error', e);
+        };
+    }
+
+    function connectTerminalWS(protocol, host) {
+        if (wsTerminal) {
+            try { wsTerminal.close(); } catch(e) {}
+        }
         wsTerminal = new WebSocket(`${protocol}//${host}/ws/terminal`);
         wsTerminal.onmessage = (event) => {
             appendTerminal(event.data, event.data.startsWith('>'));
         };
+        wsTerminal.onclose = () => {
+            if (isConnected) {
+                console.warn('Terminal WS closed, reconnecting in 2s...');
+                setTimeout(() => {
+                    if (isConnected) connectTerminalWS(protocol, host);
+                }, 2000);
+            }
+        };
+        wsTerminal.onerror = (e) => {
+            console.error('Terminal WS error', e);
+        };
     }
     
     function closeWebSockets() {
-        if (wsTelemetry) wsTelemetry.close();
-        if (wsTerminal) wsTerminal.close();
+        // Set isConnected false before closing to prevent reconnection attempts
+        if (wsTelemetry) { try { wsTelemetry.close(); } catch(e) {} wsTelemetry = null; }
+        if (wsTerminal) { try { wsTerminal.close(); } catch(e) {} wsTerminal = null; }
     }
 
     // --- Helpers ---
@@ -186,6 +280,9 @@ document.addEventListener('DOMContentLoaded', () => {
             btnCancel.disabled = false;
         } else if (stateData.state === 'Idle') {
             statusDot.classList.add('connected');
+        } else if (stateData.state === 'Error') {
+            // Bug #24: Handle error state in UI
+            statusDot.classList.add('error');
         }
 
         // Progress Circle
@@ -207,10 +304,12 @@ document.addEventListener('DOMContentLoaded', () => {
         timeElapsed.textContent = formatSeconds(stateData.elapsed_s);
         timeEta.textContent = formatSeconds(stateData.eta_s);
         
-        // Temperatures
+        // Temperatures — now includes target from firmware (Bug #9)
         if (stateData.temps) {
-            actualHotend.textContent = stateData.temps.hotend.actual;
-            actualBed.textContent = stateData.temps.bed.actual;
+            actualHotend.textContent = Math.round(stateData.temps.hotend.actual);
+            targetHotend.textContent = Math.round(stateData.temps.hotend.target);
+            actualBed.textContent = Math.round(stateData.temps.bed.actual);
+            targetBed.textContent = Math.round(stateData.temps.bed.target);
         }
     }
 
@@ -232,15 +331,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnPause.addEventListener('click', () => fetch('/api/control/pause', {method:'POST'}));
     btnResume.addEventListener('click', () => fetch('/api/control/resume', {method:'POST'}));
-    btnCancel.addEventListener('click', () => fetch('/api/control/cancel', {method:'POST'}));
+    
+    // Bug #25: Cancel confirmation dialog
+    btnCancel.addEventListener('click', () => {
+        if (confirm('Cancel the current print? This will turn off heaters and home X/Y.')) {
+            fetch('/api/control/cancel', {method:'POST'});
+        }
+    });
 
-    // Jogging
+    // Jogging — uses step selector and sends individual commands (Bug #11, #23)
     document.querySelectorAll('.btn-jog').forEach(btn => {
         btn.addEventListener('click', () => {
             const axis = btn.dataset.axis;
-            const amount = btn.dataset.amount;
-            const cmd = `G91\nG1 ${axis}${amount} F3000\nG90`;
-            sendCommand(cmd);
+            const dir = parseFloat(btn.dataset.dir);
+            const step = parseFloat(jogStepSelect.value);
+            const amount = dir * step;
+            // Send each command individually for proper flow control
+            sendCommand('G91');
+            sendCommand(`G1 ${axis}${amount} F3000`);
+            sendCommand('G90');
         });
     });
     
@@ -272,10 +381,8 @@ document.addEventListener('DOMContentLoaded', () => {
         let cmd = '';
         if (heater === 'hotend') {
             cmd = `M104 S${val}`;
-            targetHotend.textContent = val;
         } else {
             cmd = `M140 S${val}`;
-            targetBed.textContent = val;
         }
         sendCommand(cmd);
         input.value = '';
