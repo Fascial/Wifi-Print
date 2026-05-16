@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wireless Print</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="ambient-bg"></div>
+    
+    <header>
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+            <h1>Wireless Print</h1>
+        </div>
+        <div class="connection-status">
+            <div class="pulse-dot" id="status-dot"></div>
+            <span id="printer-state">Disconnected</span>
+        </div>
+    </header>
+
+    <main class="dashboard-grid">
+        
+        <!-- Left Column: Status & Print Control -->
+        <div class="col-main">
+            <!-- Connection Card -->
+            <section class="glass-card connect-card">
+                <h2>Connection</h2>
+                <div class="connect-controls">
+                    <select id="port-select">
+                        <option value="">Searching...</option>
+                    </select>
+                    <select id="baud-select">
+                        <option value="115200">115200</option>
+                        <option value="250000">250000</option>
+                    </select>
+                    <button id="btn-connect" class="btn-action primary">Connect</button>
+                </div>
+            </section>
+
+            <!-- Active Print Card -->
+            <section class="glass-card status-card">
+                <div class="status-header">
+                    <h2>Active Print</h2>
+                    <span id="current-file" class="file-name">Not Connected</span>
+                </div>
+                
+                <div class="progress-container-circular">
+                    <svg class="progress-ring" width="90" height="90">
+                        <circle class="ring-bg" cx="45" cy="45" r="40"></circle>
+                        <circle class="ring-fill" id="progress-circle" cx="45" cy="45" r="40"></circle>
+                    </svg>
+                    <div class="progress-text" id="progress-percent">0%</div>
+                </div>
+
+                <!-- Print Actions -->
+                <div class="print-actions">
+                    <button id="btn-pause" class="btn-action secondary" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                        Pause
+                    </button>
+                    <button id="btn-resume" class="btn-action primary" style="display:none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        Resume
+                    </button>
+                    <button id="btn-cancel" class="btn-action danger" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                        Cancel
+                    </button>
+                </div>
+                
+                <!-- File Upload -->
+                <section class="upload-zone" id="upload-zone">
+                    <input type="file" id="file-input" accept=".gcode" hidden>
+                    <div class="upload-content">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <p>Click or drag G-Code here to print</p>
+                    </div>
+                </section>
+            </section>
+            
+            <!-- Analytics Card -->
+            <section class="glass-card analytics-card">
+                <h2>Analytics</h2>
+                <div class="analytics-grid">
+                    <div class="analytics-item">
+                        <span class="label">Elapsed Time</span>
+                        <span class="value" id="time-elapsed">00:00:00</span>
+                    </div>
+                    <div class="analytics-item">
+                        <span class="label">Estimated Remaining</span>
+                        <span class="value" id="time-eta">--:--:--</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Right Column: Tools & Terminals -->
+        <div class="col-side">
+            
+            <!-- Temperature & Tuning -->
+            <section class="glass-card tuning-card">
+                <h2>Tuning</h2>
+                <div class="temps-grid">
+                    <div class="temp-box hotend">
+                        <div class="temp-header">Hotend</div>
+                        <div class="temp-readout"><span id="temp-hotend-actual">0</span>° / <span id="temp-hotend-target">0</span>°</div>
+                        <div class="temp-inputs">
+                            <input type="number" id="input-hotend" placeholder="200" min="0" max="300">
+                            <button class="btn-set" onclick="setTemp('hotend')">Set</button>
+                        </div>
+                    </div>
+                    <div class="temp-box bed">
+                        <div class="temp-header">Bed</div>
+                        <div class="temp-readout"><span id="temp-bed-actual">0</span>° / <span id="temp-bed-target">0</span>°</div>
+                        <div class="temp-inputs">
+                            <input type="number" id="input-bed" placeholder="60" min="0" max="120">
+                            <button class="btn-set" onclick="setTemp('bed')">Set</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="live-tuning">
+                    <div class="tuning-row">
+                        <span class="label">Print Speed</span>
+                        <div class="temp-inputs">
+                            <input type="number" id="input-speed" placeholder="100" min="10" max="300" step="10">
+                            <button class="btn-set" onclick="setMultiplier('speed')">Set %</button>
+                        </div>
+                    </div>
+                    <div class="tuning-row">
+                        <span class="label">Flow Rate</span>
+                        <div class="temp-inputs">
+                            <input type="number" id="input-flow" placeholder="100" min="10" max="200" step="10">
+                            <button class="btn-set" onclick="setMultiplier('flow')">Set %</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Motion -->
+            <section class="glass-card motion-card">
+                <h2>Motion</h2>
+                <div class="motion-flex-wrapper" style="display: flex; flex-direction: row; justify-content: space-around; align-items: center; width: 100%; gap: 1rem;">
+                    <div class="d-pad">
+                        <button class="btn-jog" data-axis="Y" data-amount="10">Y+</button>
+                        <div class="x-row">
+                            <button class="btn-jog" data-axis="X" data-amount="-10">X-</button>
+                            <button class="btn-home" id="btn-home-xy">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+                            </button>
+                            <button class="btn-jog" data-axis="X" data-amount="10">X+</button>
+                        </div>
+                        <button class="btn-jog" data-axis="Y" data-amount="-10">Y-</button>
+                    </div>
+                    <div class="z-pad">
+                        <button class="btn-jog" data-axis="Z" data-amount="10">Z+</button>
+                        <button class="btn-home" id="btn-home-z">Home Z</button>
+                        <button class="btn-jog" data-axis="Z" data-amount="-10">Z-</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Terminal -->
+            <section class="glass-card terminal-card">
+                <h2>Terminal</h2>
+                <div class="terminal-window" id="terminal-output"></div>
+                <div class="terminal-input-bar">
+                    <span class="prompt">&gt;</span>
+                    <input type="text" id="terminal-input" placeholder="Send G-Code...">
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
