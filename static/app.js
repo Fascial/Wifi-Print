@@ -357,10 +357,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const dir = parseFloat(btn.dataset.dir);
             const step = parseFloat(jogStepSelect.value);
             const amount = dir * step;
-            // Send each command individually for proper flow control
-            sendCommand('G91');
-            sendCommand(`G1 ${axis}${amount} F3000`);
-            sendCommand('G90');
+            // Send as single compound command to prevent interleaving on rapid clicks
+            sendCommand(`G91\nG1 ${axis}${amount} F3000\nG90`);
         });
     });
     

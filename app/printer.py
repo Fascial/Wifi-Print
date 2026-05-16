@@ -192,7 +192,7 @@ class PrinterController:
             async with self._serial_lock:
                 loop = asyncio.get_running_loop()
                 try:
-                    full_cmd = f"{cmd}\r\n"
+                    full_cmd = f"{cmd}\n"
                     # Flush immediately to ensure Windows doesn't buffer it
                     await loop.run_in_executor(
                         None, lambda: (self.serial_conn.write(full_cmd.encode('utf-8')), self.serial_conn.flush())
