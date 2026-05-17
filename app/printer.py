@@ -1,4 +1,5 @@
 import asyncio
+import os
 import serial
 import serial.tools.list_ports
 import time
@@ -399,7 +400,6 @@ class PrinterController:
             
             if filepath_to_delete and os.path.exists(filepath_to_delete):
                 try:
-                    import os
                     os.remove(filepath_to_delete)
                 except Exception as e:
                     logger.error(f"Failed to clean up gcode file: {e}")
