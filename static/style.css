@@ -378,3 +378,28 @@ header {
         body { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
     }
 }
+
+/* Staged State for Active Print Card */
+.status-card.staged {
+    border-color: rgba(16, 185, 129, 0.35);
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.1), 0 4px 20px -10px rgba(0,0,0,0.5);
+}
+.status-card.staged .progress-ring .ring-fill {
+    animation: staged-breathe 2s infinite ease-in-out;
+}
+@keyframes staged-breathe {
+    0%, 100% { opacity: 0.65; }
+    50% { opacity: 1; }
+}
+
+/* Printing State for Active Print Card */
+.status-card.printing {
+    border-color: rgba(59, 130, 246, 0.35);
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.15), 0 4px 20px -10px rgba(0,0,0,0.5);
+}
+
+/* Paused State for Active Print Card */
+.status-card.paused {
+    border-color: rgba(245, 158, 11, 0.35);
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.15), 0 4px 20px -10px rgba(0,0,0,0.5);
+}

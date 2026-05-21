@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const progressPercent = document.getElementById('progress-percent');
     const currentFile = document.getElementById('current-file');
     
+    const btnStart = document.getElementById('btn-start');
     const btnPause = document.getElementById('btn-pause');
     const btnResume = document.getElementById('btn-resume');
     const btnCancel = document.getElementById('btn-cancel');
@@ -38,8 +39,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let portPollInterval = null;
     let hasAttemptedAutoconnect = false;
     let serverConfirmedDisconnected = false;
+    
+    // WebSocket Timeout Trackers (prevents overlapping reconnect loops)
+    let telemetryReconnectTimeout = null;
+    let terminalReconnectTimeout = null;
 
     // Initialization
+    setupWebSockets();
     checkExistingConnection();
 
     // --- API Calls & Polling ---
@@ -49,20 +55,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch('/api/state');
             const data = await res.json();
             
-            if (data.state !== 'Disconnected') {
+            updateUIState(data);
+            
+            if (data.state !== 'Disconnected' && data.state !== 'Error') {
                 // Recover the existing connection session
-                isConnected = true;
-                btnConnect.textContent = 'Disconnect';
-                btnConnect.classList.replace('primary', 'danger');
-                
-                // Add the connected port to the select dropdown immediately
                 if (data.port) {
                     portSelect.innerHTML = `<option value="${data.port}">${data.port}</option>`;
                     portSelect.value = data.port;
                 }
-                
-                setupWebSockets();
-                updateUIState(data);
                 
                 // Fetch full port list in background silently
                 fetch('/api/ports').then(r => r.json()).then(d => {
@@ -81,12 +81,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function fetchPorts() {
-        if (isConnected) return; // Stop polling if connected (Bug #7)
+        if (isConnected) return; // Stop polling if connected
         try {
             const res = await fetch('/api/ports');
             const data = await res.json();
             
-            // Double-check connection state after async fetch (Bug #7 TOCTOU fix)
+            // Double-check connection state after async fetch
             if (isConnected) return;
             
             if (JSON.stringify(data.ports) !== JSON.stringify(availablePorts)) {
@@ -128,7 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startPortPolling() {
         if (portPollInterval) clearInterval(portPollInterval);
-        portPollInterval = setInterval(fetchPorts, 3000); // Slightly slower to reduce log noise
+        portPollInterval = setInterval(fetchPorts, 3000);
     }
 
     function stopPortPolling() {
@@ -141,12 +141,6 @@ document.addEventListener('DOMContentLoaded', () => {
     async function toggleConnection() {
         if (isConnected) {
             await fetch('/api/disconnect', { method: 'POST' });
-            isConnected = false;
-            btnConnect.textContent = 'Connect';
-            btnConnect.classList.replace('danger', 'primary');
-            updateUIState({state: 'Disconnected'});
-            closeWebSockets();
-            startPortPolling();
         } else {
             const port = portSelect.value;
             const baudrate = baudSelect.value;
@@ -165,16 +159,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 btnConnect.disabled = false;
                 if (data.success) {
-                    isConnected = true;
-                    
                     // Save successful connection parameters
                     localStorage.setItem('savedPort', port);
                     localStorage.setItem('savedBaudrate', baudrate);
-                    
-                    btnConnect.textContent = 'Disconnect';
-                    btnConnect.classList.replace('primary', 'danger');
-                    stopPortPolling();
-                    setupWebSockets();
                     updateUIState(data.state);
                 } else {
                     btnConnect.textContent = 'Connect';
@@ -188,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- WebSockets with reconnection (Bug #20) ---
+    // --- WebSockets with Always-On Dynamic Reconnection ---
 
     function setupWebSockets() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -208,12 +195,11 @@ document.addEventListener('DOMContentLoaded', () => {
             updateUIState(state);
         };
         wsTelemetry.onclose = () => {
-            if (isConnected) {
-                console.warn('Telemetry WS closed, reconnecting in 2s...');
-                setTimeout(() => {
-                    if (isConnected) connectTelemetryWS(protocol, host);
-                }, 2000);
-            }
+            console.warn('Telemetry WS closed, reconnecting in 2s...');
+            clearTimeout(telemetryReconnectTimeout);
+            telemetryReconnectTimeout = setTimeout(() => {
+                connectTelemetryWS(protocol, host);
+            }, 2000);
         };
         wsTelemetry.onerror = (e) => {
             console.error('Telemetry WS error', e);
@@ -229,12 +215,11 @@ document.addEventListener('DOMContentLoaded', () => {
             appendTerminal(event.data, event.data.startsWith('>'));
         };
         wsTerminal.onclose = () => {
-            if (isConnected) {
-                console.warn('Terminal WS closed, reconnecting in 2s...');
-                setTimeout(() => {
-                    if (isConnected) connectTerminalWS(protocol, host);
-                }, 2000);
-            }
+            console.warn('Terminal WS closed, reconnecting in 2s...');
+            clearTimeout(terminalReconnectTimeout);
+            terminalReconnectTimeout = setTimeout(() => {
+                connectTerminalWS(protocol, host);
+            }, 2000);
         };
         wsTerminal.onerror = (e) => {
             console.error('Terminal WS error', e);
@@ -242,9 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function closeWebSockets() {
-        // Set isConnected false before closing to prevent reconnection attempts
-        if (wsTelemetry) { try { wsTelemetry.close(); } catch(e) {} wsTelemetry = null; }
-        if (wsTerminal) { try { wsTerminal.close(); } catch(e) {} wsTerminal = null; }
+        // Noop since WebSockets are always-on and auto-reconnecting
     }
 
     // --- Helpers ---
@@ -256,58 +239,144 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${h}:${m}:${s}`;
     }
 
+    // --- Dynamic Control Safety Toggles ---
+    function setManualControlsEnabled({ movement, tuning, terminal }) {
+        // Axis jog buttons
+        document.querySelectorAll('.btn-jog').forEach(btn => {
+            btn.disabled = !movement;
+        });
+        
+        // Homing buttons
+        document.getElementById('btn-home-xy').disabled = !movement;
+        document.getElementById('btn-home-z').disabled = !movement;
+        
+        // Temperature/Multiplier tuning inputs and action buttons
+        document.querySelectorAll('.tuning-card input, .tuning-card button').forEach(el => {
+            el.disabled = !tuning;
+        });
+
+        // Terminal input
+        termInput.disabled = !terminal;
+    }
+
     // --- UI Updates ---
 
     function updateUIState(stateData) {
         if (!stateData) return;
         
-        // Bug Fix: Sync frontend connection state if server disconnects unexpectedly (e.g. USB unplugged)
-        if (stateData.state === 'Disconnected' && isConnected) {
-            isConnected = false;
+        const statusCard = document.querySelector('.status-card');
+        if (statusCard) {
+            statusCard.classList.remove('staged', 'printing', 'paused');
+        }
+        progressPercent.style.color = '';
+        progressPercent.style.fontSize = '';
+        progressCircle.style.stroke = '';
+        
+        // Dynamically compute and synchronize the connection state with the backend telemetry state
+        const wasConnected = isConnected;
+        isConnected = (stateData.state !== 'Disconnected' && stateData.state !== 'Error');
+
+        if (isConnected) {
+            btnConnect.textContent = 'Disconnect';
+            btnConnect.classList.replace('primary', 'danger');
+            stopPortPolling();
+        } else {
             btnConnect.textContent = 'Connect';
             btnConnect.classList.replace('danger', 'primary');
-            closeWebSockets();
+            if (wasConnected) {
+                closeWebSockets();
+            }
             startPortPolling();
         }
 
-        // State text and dot
-        printerState.textContent = stateData.state;
+        // Port & Baud dropdown selects
+        portSelect.disabled = isConnected;
+        baudSelect.disabled = isConnected;
+
+        // State text and dot with detailed error reporting
+        if (stateData.state === 'Error' && stateData.error) {
+            printerState.textContent = `Error: ${stateData.error}`;
+        } else {
+            printerState.textContent = stateData.state;
+        }
         statusDot.className = 'pulse-dot'; 
         
-        btnPause.disabled = true;
-        btnPause.style.display = 'flex';
+        // Hide/Disable all print actions by default
+        btnStart.style.display = 'none';
+        btnPause.style.display = 'none';
         btnResume.style.display = 'none';
+        btnCancel.style.display = 'none';
+        
+        btnStart.disabled = true;
+        btnPause.disabled = true;
+        btnResume.disabled = true;
         btnCancel.disabled = true;
         
-        if (stateData.state === 'Printing') {
-            statusDot.classList.add('printing');
-            btnPause.disabled = false;
-            btnCancel.disabled = false;
-        } else if (stateData.state === 'Paused') {
-            statusDot.classList.add('connected');
-            btnPause.style.display = 'none';
-            btnResume.style.display = 'flex';
-            btnResume.disabled = false;
-            btnCancel.disabled = false;
+        if (stateData.state === 'Disconnected') {
+            statusDot.classList.add('disconnected');
+            setManualControlsEnabled({ movement: false, tuning: false, terminal: false });
         } else if (stateData.state === 'Idle') {
             statusDot.classList.add('connected');
+            setManualControlsEnabled({ movement: true, tuning: true, terminal: true });
+            
+            // Staged file flow
+            if (stateData.loaded_file) {
+                if (statusCard) statusCard.classList.add('staged');
+                btnStart.style.display = 'flex';
+                btnStart.disabled = false;
+                btnCancel.style.display = 'flex';
+                btnCancel.disabled = false;
+                btnCancel.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg> Unload`;
+                
+                progressPercent.textContent = 'READY';
+                progressPercent.style.color = 'var(--success)';
+                progressPercent.style.fontSize = '0.95rem';
+                progressCircle.style.strokeDashoffset = 0;
+                progressCircle.style.stroke = 'var(--success)';
+            }
+        } else if (stateData.state === 'Printing') {
+            statusDot.classList.add('printing');
+            if (statusCard) statusCard.classList.add('printing');
+            // Live temperature and multipliers remain fully active during printing, but movement jog buttons are locked
+            setManualControlsEnabled({ movement: false, tuning: true, terminal: true });
+            
+            btnPause.style.display = 'flex';
+            btnPause.disabled = false;
+            btnCancel.style.display = 'flex';
+            btnCancel.disabled = false;
+            btnCancel.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> Cancel`;
+        } else if (stateData.state === 'Paused') {
+            statusDot.classList.add('connected');
+            if (statusCard) statusCard.classList.add('paused');
+            // Jogging is allowed during pause to move head safely, temperature is fully adjustable
+            setManualControlsEnabled({ movement: true, tuning: true, terminal: true });
+            
+            btnResume.style.display = 'flex';
+            btnResume.disabled = false;
+            btnCancel.style.display = 'flex';
+            btnCancel.disabled = false;
+            btnCancel.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg> Cancel`;
         } else if (stateData.state === 'Error') {
-            // Bug #24: Handle error state in UI
             statusDot.classList.add('error');
+            setManualControlsEnabled({ movement: true, tuning: true, terminal: true });
         }
 
         // Progress Circle
         if (stateData.progress !== undefined) {
-            const p = Math.max(0, Math.min(100, stateData.progress));
-            const circumference = 251.327; // 2 * pi * 40
-            const offset = circumference - (p / 100) * circumference;
-            progressCircle.style.strokeDashoffset = offset;
-            progressPercent.textContent = p.toFixed(0) + '%';
+            if (!(stateData.state === 'Idle' && stateData.loaded_file)) {
+                const p = Math.max(0, Math.min(100, stateData.progress));
+                const circumference = 251.327; // 2 * pi * 40
+                const offset = circumference - (p / 100) * circumference;
+                progressCircle.style.strokeDashoffset = offset;
+                progressPercent.textContent = p.toFixed(0) + '%';
+            }
         }
         
-        // File & Analytics
-        if (stateData.file) {
-            currentFile.textContent = stateData.file;
+        // File & Analytics Labels
+        if (stateData.state === 'Printing' || stateData.state === 'Paused') {
+            currentFile.textContent = stateData.file || "Streaming...";
+        } else if (stateData.state === 'Idle' && stateData.loaded_file) {
+            currentFile.textContent = stateData.loaded_file;
         } else {
             currentFile.textContent = stateData.state === 'Disconnected' ? "Not Connected" : "Ready to Print";
         }
@@ -315,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
         timeElapsed.textContent = formatSeconds(stateData.elapsed_s);
         timeEta.textContent = formatSeconds(stateData.eta_s);
         
-        // Temperatures — now includes target from firmware (Bug #9)
+        // Temperatures showing actual and target
         if (stateData.temps) {
             actualHotend.textContent = Math.round(stateData.temps.hotend.actual);
             targetHotend.textContent = Math.round(stateData.temps.hotend.target);
@@ -336,17 +405,33 @@ document.addEventListener('DOMContentLoaded', () => {
         termOutput.scrollTop = termOutput.scrollHeight;
     }
 
-    // --- Control Handlers ---
+    // --- Control Event Handlers ---
 
     btnConnect.addEventListener('click', toggleConnection);
-
-    btnPause.addEventListener('click', () => fetch('/api/control/pause', {method:'POST'}));
-    btnResume.addEventListener('click', () => fetch('/api/control/resume', {method:'POST'}));
     
-    // Bug #25: Cancel confirmation dialog
+    // Dedicated Print Start execution
+    btnStart.addEventListener('click', () => {
+        fetch('/api/control/start', { method: 'POST' });
+    });
+
+    btnPause.addEventListener('click', () => {
+        fetch('/api/control/pause', { method: 'POST' });
+    });
+    
+    btnResume.addEventListener('click', () => {
+        fetch('/api/control/resume', { method: 'POST' });
+    });
+    
     btnCancel.addEventListener('click', () => {
-        if (confirm('Cancel the current print? This will turn off heaters and home X/Y.')) {
-            fetch('/api/control/cancel', {method:'POST'});
+        const state = printerState.textContent;
+        if (state === 'Idle') {
+            // Safe unload
+            fetch('/api/control/unload', { method: 'POST' });
+        } else {
+            // Active print cancel with prompt
+            if (confirm('Cancel the current print? This will turn off heaters and home X/Y.')) {
+                fetch('/api/control/cancel', { method: 'POST' });
+            }
         }
     });
 
@@ -398,34 +483,35 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Exposed to window for onclick handlers
-    window.setTemp = (heater) => {
+    // Clean modular temperature and speed/flow rate tuning
+    function setTemp(heater) {
         const input = document.getElementById(`input-${heater}`);
         const val = input.value;
         if (!val) return;
         
-        let cmd = '';
-        if (heater === 'hotend') {
-            cmd = `M104 S${val}`;
-        } else {
-            cmd = `M140 S${val}`;
-        }
+        const cmd = heater === 'hotend' ? `M104 S${val}` : `M140 S${val}`;
         sendCommand(cmd);
         input.value = '';
-    };
+    }
 
-    window.setMultiplier = (type) => {
+    function setMultiplier(type) {
         const input = document.getElementById(`input-${type}`);
         const val = input.value;
         if (!val) return;
         
         if (type === 'speed') {
-            fetch(`/api/control/speed/${val}`, {method: 'POST'});
+            fetch(`/api/control/speed/${val}`, { method: 'POST' });
         } else if (type === 'flow') {
-            fetch(`/api/control/flow/${val}`, {method: 'POST'});
+            fetch(`/api/control/flow/${val}`, { method: 'POST' });
         }
         input.value = '';
     }
+
+    // Modern event listener selectors replacing global namespaces
+    document.getElementById('btn-set-hotend').addEventListener('click', () => setTemp('hotend'));
+    document.getElementById('btn-set-bed').addEventListener('click', () => setTemp('bed'));
+    document.getElementById('btn-set-speed').addEventListener('click', () => setMultiplier('speed'));
+    document.getElementById('btn-set-flow').addEventListener('click', () => setMultiplier('flow'));
 
     // --- File Upload ---
 
@@ -467,7 +553,11 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await res.json();
             if (!data.success) {
-                alert(data.error || "Failed to start print");
+                alert(data.error || "Failed to stage print file");
+            } else {
+                const stateRes = await fetch('/api/state');
+                const stateData = await stateRes.json();
+                updateUIState(stateData);
             }
         } catch (e) {
             console.error(e);

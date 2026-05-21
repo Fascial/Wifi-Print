@@ -30,11 +30,12 @@ def get_local_ip():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    port = int(os.environ.get("PORT", 8000))
     local_ip = get_local_ip()
     print("\n" + "="*50)
     print(" Wireless Print Server Running! ")
-    print(f" Local Access:   http://localhost:8000")
-    print(f" Network Access: http://{local_ip}:8000")
+    print(f" Local Access:   http://localhost:{port}")
+    print(f" Network Access: http://{local_ip}:{port}")
     print("="*50 + "\n")
 
     # Register ONE global callback for telemetry + terminal

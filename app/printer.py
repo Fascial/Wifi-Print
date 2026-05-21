@@ -5,6 +5,7 @@ import serial.tools.list_ports
 import time
 import logging
 import re
+import aiofiles
 from typing import List, Optional, Dict, Any, Tuple
 
 from app.core.models import PrinterState
@@ -24,8 +25,15 @@ class PrinterController:
         self.current_line_idx = 0
 
         # Telemetry
+        # Telemetry & Coordinate Tracking
         self.temps = {"hotend": {"actual": 0.0, "target": 0.0}, "bed": {"actual": 0.0, "target": 0.0}}
-        self.position = {"X": 0.0, "Y": 0.0, "Z": 0.0}
+        self.position = {"X": 0.0, "Y": 0.0, "Z": 0.0, "E": 0.0}
+        self.is_absolute_mode = True
+        self.is_absolute_extruder = True
+
+        self.paused_position = {}
+        self.paused_absolute_mode = True
+        self.paused_absolute_extruder = True
 
         # Time Analytics (H1: includes pause tracking)
         self.print_start_time: Optional[float] = None
@@ -42,6 +50,7 @@ class PrinterController:
         # Concurrency primitives (C1+C2: single-sender architecture)
         self._serial_lock: Optional[asyncio.Lock] = None
         self._cmd_queue: Optional[asyncio.Queue] = None
+        self._print_queue: Optional[asyncio.Queue] = None
         self._ok_event: Optional[asyncio.Event] = None
         self._read_task: Optional[asyncio.Task] = None
         self._print_feeder_task: Optional[asyncio.Task] = None
@@ -54,6 +63,10 @@ class PrinterController:
         self._auto_reconnect_task: Optional[asyncio.Task] = None
         self._target_port: Optional[str] = None
         self._target_baudrate: Optional[int] = None
+
+        # Loaded File state
+        self.loaded_file: Optional[str] = None
+        self.loaded_filepath: Optional[str] = None
 
     @staticmethod
     def get_available_ports() -> List[str]:
@@ -71,10 +84,27 @@ class PrinterController:
         if not self._auto_reconnect_task or self._auto_reconnect_task.done():
             self._auto_reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
 
+        # Cancel any lingering tasks from previous connections
+        for attr in ['_read_task', '_telemetry_task', '_print_feeder_task']:
+            old_task = getattr(self, attr, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+                try:
+                    await old_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                setattr(self, attr, None)
+
         # Always create fresh primitives on connect
         self._cmd_queue = asyncio.Queue(maxsize=100)
+        self._print_queue = asyncio.Queue(maxsize=1)
         self._ok_event = asyncio.Event()
         self._serial_lock = asyncio.Lock()
+
+        # Reset coordinate tracking
+        self.position = {"X": 0.0, "Y": 0.0, "Z": 0.0, "E": 0.0}
+        self.is_absolute_mode = True
+        self.is_absolute_extruder = True
 
         loop = asyncio.get_running_loop()
         def _open_port():
@@ -149,6 +179,8 @@ class PrinterController:
         self._read_task = None
         self._print_feeder_task = None
         self._telemetry_task = None
+        self._print_queue = None
+        self._cmd_queue = None
         if intentional:
             self._auto_reconnect_task = None
 
@@ -226,11 +258,21 @@ class PrinterController:
                     await asyncio.sleep(0.01)
 
                 # Step 2: Dispatch next queued command if printer is ready
-                if (self._cmd_queue and not self._cmd_queue.empty()
-                        and self._ok_event and self._ok_event.is_set()):
-                    cmd = self._cmd_queue.get_nowait()
-                    self._ok_event.clear()
-                    await self._write_serial(cmd)
+                if self._ok_event and self._ok_event.is_set():
+                    cmd = None
+                    # 2a. Priority/Manual commands first
+                    if self._cmd_queue and not self._cmd_queue.empty():
+                        cmd = self._cmd_queue.get_nowait()
+                    # 2b. Active print commands second, only if printing
+                    elif (self.state == PrinterState.PRINTING
+                          and self._print_queue
+                          and not self._print_queue.empty()):
+                        cmd = self._print_queue.get_nowait()
+
+                    if cmd:
+                        self._ok_event.clear()
+                        self._update_position_from_cmd(cmd)
+                        await self._write_serial(cmd)
 
             except serial.SerialException as e:
                 logger.error(f"Serial disconnected: {e}")
@@ -261,29 +303,66 @@ class PrinterController:
         Format: ok T:200.5 /210.0 B:60.2 /60.0
         """
         try:
-            # Try to match actual/target pairs first
-            hotend_match = re.search(r'T:(\d+\.?\d*)\s*/(\d+\.?\d*)', line)
-            bed_match = re.search(r'B:(\d+\.?\d*)\s*/(\d+\.?\d*)', line)
+            t_match = re.search(r'T:(\d+\.?\d*)(?:\s*/(\d+\.?\d*))?', line)
+            b_match = re.search(r'B:(\d+\.?\d*)(?:\s*/(\d+\.?\d*))?', line)
 
-            if hotend_match:
-                self.temps["hotend"]["actual"] = float(hotend_match.group(1))
-                self.temps["hotend"]["target"] = float(hotend_match.group(2))
-            else:
-                t_match = re.search(r'T:(\d+\.?\d*)', line)
-                if t_match:
-                    self.temps["hotend"]["actual"] = float(t_match.group(1))
-
-            if bed_match:
-                self.temps["bed"]["actual"] = float(bed_match.group(1))
-                self.temps["bed"]["target"] = float(bed_match.group(2))
-            else:
-                b_match = re.search(r'B:(\d+\.?\d*)', line)
-                if b_match:
-                    self.temps["bed"]["actual"] = float(b_match.group(1))
+            if t_match:
+                self.temps["hotend"]["actual"] = float(t_match.group(1))
+                if t_match.group(2):
+                    self.temps["hotend"]["target"] = float(t_match.group(2))
+            if b_match:
+                self.temps["bed"]["actual"] = float(b_match.group(1))
+                if b_match.group(2):
+                    self.temps["bed"]["target"] = float(b_match.group(2))
 
             self._safe_notify_telemetry()
         except Exception:
             pass
+
+    def _update_position_from_cmd(self, cmd: str):
+        """Parse coordinate updates and absolute/relative modes from G-code command."""
+        # Strip comment and whitespace
+        clean_cmd = cmd.split(';')[0].strip()
+        parts = clean_cmd.split()
+        if not parts:
+            return
+
+        g_code = parts[0].upper()
+        if g_code in ["G0", "G1", "G2", "G3", "G92"]:
+            # Parse X, Y, Z, E coordinate values
+            vals = {}
+            for part in parts[1:]:
+                pu = part.upper()
+                if pu and pu[0] in "XYZE":
+                    try:
+                        vals[pu[0]] = float(pu[1:])
+                    except ValueError:
+                        pass
+
+            if g_code == "G92":
+                for axis, val in vals.items():
+                    self.position[axis] = val
+            else:
+                for axis in "XYZ":
+                    if axis in vals:
+                        if self.is_absolute_mode:
+                            self.position[axis] = vals[axis]
+                        else:
+                            self.position[axis] += vals[axis]
+                if "E" in vals:
+                    if self.is_absolute_extruder:
+                        self.position["E"] = vals["E"]
+                    else:
+                        self.position["E"] += vals["E"]
+
+        elif g_code == "G90":
+            self.is_absolute_mode = True
+        elif g_code == "G91":
+            self.is_absolute_mode = False
+        elif g_code == "M82":
+            self.is_absolute_extruder = True
+        elif g_code == "M83":
+            self.is_absolute_extruder = False
 
     async def _telemetry_loop(self):
         """Periodic temperature polling. Sends M105 through _cmd_queue for proper flow control (C2)."""
@@ -301,16 +380,16 @@ class PrinterController:
         if self.state != PrinterState.IDLE:
             return False
 
+        self.loaded_file = filename
+        self.loaded_filepath = filepath
         self.current_file = filename
         self.current_filepath = filepath
-        import os
         self.file_size = os.path.getsize(filepath)
         self.current_file_pos = 0
 
         # Parse metadata (e.g. TIME estimate) from the first few lines
         self.estimated_total_time = None
         try:
-            import aiofiles
             async with aiofiles.open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 for _ in range(100):
                     line = await f.readline()
@@ -339,24 +418,78 @@ class PrinterController:
         return True
 
     def pause_print(self):
-        """Pause host-streamed print by stopping the feeder loop."""
+        """Pause host-streamed print with a safe parking sequence."""
         if self.state == PrinterState.PRINTING:
             self.state = PrinterState.PAUSED
             # H1: Record when pause started
             self._pause_start = time.time()
+
+            # Save the exact state at pause time
+            self.paused_position = self.position.copy()
+            self.paused_absolute_mode = self.is_absolute_mode
+            self.paused_absolute_extruder = self.is_absolute_extruder
+
+            # Clear any pending print commands currently in print_queue so they don't leak
+            self._drain_queue(self._print_queue)
+
+            # Queue the pause sequence commands (high priority)
+            # 1. Retract filament (relative)
+            # 2. Lift Z (relative)
+            # 3. Park XY (absolute)
+            self.send_command("G91")
+            self.send_command("G1 E-2 F2700")
+            self.send_command("G1 Z5 F3000")
+            self.send_command("G90")
+            self.send_command("G1 X0 Y0 F6000")
+
+            # Restore the coordinate mode on host state tracking
+            self.is_absolute_mode = True
+
             self._safe_notify_telemetry()
 
     def resume_print(self):
-        """Resume print by restarting the feeder loop."""
+        """Resume print by restoring position and continuing the feeder loop."""
         if self.state == PrinterState.PAUSED:
             # H1: Accumulate paused duration
             if self._pause_start:
                 self._total_paused += time.time() - self._pause_start
                 self._pause_start = None
 
+            # Queue the resume sequence commands (high priority)
+            # 1. Move back to absolute XY
+            # 2. Move back to absolute Z
+            # 3. Prime filament (relative)
+            # 4. Restore original G90/G91 and M82/M83 modes
+            
+            # Switch to absolute mode for restoring coordinates
+            self.send_command("G90")
+            
+            # X and Y restore
+            px = self.paused_position.get("X", 0.0)
+            py = self.paused_position.get("Y", 0.0)
+            self.send_command(f"G1 X{px:.3f} Y{py:.3f} F6000")
+            
+            # Z restore
+            pz = self.paused_position.get("Z", 0.0)
+            self.send_command(f"G1 Z{pz:.3f} F3000")
+            
+            # Prime filament (relative E)
+            self.send_command("G91")
+            self.send_command("G1 E2 F2700")
+            
+            # Restore original coordinate modes
+            if self.paused_absolute_mode:
+                self.send_command("G90")
+            else:
+                self.send_command("G91")
+                
+            if self.paused_absolute_extruder:
+                self.send_command("M82")
+            else:
+                self.send_command("M83")
+
             self.state = PrinterState.PRINTING
             self._safe_notify_telemetry()
-            # Loop will naturally resume since we just changed state back to PRINTING
 
     async def cancel_print(self):
         """Cancel print with proper cleanup. Now async for proper task management."""
@@ -373,6 +506,8 @@ class PrinterController:
                 self._print_feeder_task = None
 
             self.state = PrinterState.IDLE
+            self.loaded_file = None
+            self.loaded_filepath = None
             self.current_file = None
             self.current_filepath = None
             self.current_file_pos = 0
@@ -383,15 +518,12 @@ class PrinterController:
             self._pause_start = None
             self._total_paused = 0.0
 
-            # M5: Drain stale commands from the queue before sending cancel sequence
-            if self._cmd_queue:
-                while not self._cmd_queue.empty():
-                    try:
-                        self._cmd_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+            # Drain print queue and stale commands
+            self._drain_queue(self._print_queue)
+            self._drain_queue(self._cmd_queue)
 
-                # Send cancel commands through the queue for proper flow control
+            # Send cancel commands through the queue for proper flow control
+            if self._cmd_queue:
                 self._cmd_queue.put_nowait("M104 S0")
                 self._cmd_queue.put_nowait("M140 S0")
                 self._cmd_queue.put_nowait("G28 X Y")
@@ -405,12 +537,11 @@ class PrinterController:
                     logger.error(f"Failed to clean up gcode file: {e}")
 
     async def _print_feeder_loop(self):
-        """Feeds G-code lines into _cmd_queue one at a time.
-        The _sender_loop handles the actual serial write + ok handshake.
+        """Feeds G-code lines into _print_queue one at a time.
+        The _read_loop handles the actual serial write + ok handshake.
         """
         filepath_to_delete = None
         try:
-            import aiofiles
             async with aiofiles.open(self.current_filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 while self.state in [PrinterState.PRINTING, PrinterState.PAUSED]:
                     if self.state == PrinterState.PAUSED:
@@ -427,18 +558,33 @@ class PrinterController:
                     if not line or line.startswith(';'):
                         continue
 
-                    # Put the line into the command queue - _sender_loop will handle flow control
-                    if self._cmd_queue:
-                        await self._cmd_queue.put(line)
+                    # Put the line into the print queue - _read_loop will handle flow control
+                    if self._print_queue:
+                        await self._print_queue.put(line)
 
                     self.current_line_idx += 1
                     if self.current_line_idx % 10 == 0:
                         self._safe_notify_telemetry()
 
+            # Wait for all print commands to be sent and executed by the printer
+            if self._print_queue and self.state == PrinterState.PRINTING:
+                await self._print_queue.put("M400")
+                while (self.state == PrinterState.PRINTING 
+                       and self._print_queue 
+                       and not self._print_queue.empty()):
+                    await asyncio.sleep(0.1)
+                
+                while (self.state == PrinterState.PRINTING 
+                       and self._ok_event 
+                       and not self._ok_event.is_set()):
+                    await asyncio.sleep(0.1)
+
             # Print completed successfully (H5: clear stale data)
             if self.state in [PrinterState.PRINTING, PrinterState.PAUSED]:
                 filepath_to_delete = self.current_filepath
                 self.state = PrinterState.IDLE
+                self.loaded_file = None
+                self.loaded_filepath = None
                 self.current_file = None
                 self.current_filepath = None
                 self.current_file_pos = 0
@@ -460,7 +606,6 @@ class PrinterController:
             
         if filepath_to_delete and os.path.exists(filepath_to_delete):
             try:
-                import os
                 os.remove(filepath_to_delete)
             except Exception as e:
                 logger.error(f"Failed to clean up finished gcode file: {e}")
@@ -492,6 +637,7 @@ class PrinterController:
             "state": self.state,
             "port": self.serial_conn.port if self.serial_conn else None,
             "file": self.current_file,
+            "loaded_file": self.loaded_file,
             "progress": progress,
             "elapsed_s": int(elapsed),
             "eta_s": int(eta) if eta is not None else None,
@@ -500,13 +646,21 @@ class PrinterController:
             "error": self.last_error,
         }
 
-    def _safe_notify_telemetry(self):
-        """M6: Safely emit telemetry - tracks tasks and handles missing event loop."""
-        state_data = self.get_state()
-        for cb in self.telemetry_callbacks:
-            try:
-                asyncio.get_running_loop()
-                task = asyncio.create_task(cb(state_data))
+    def _drain_queue(self, q: Optional[asyncio.Queue]):
+        """Drains all items from an asyncio Queue without blocking."""
+        if q:
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    def _dispatch_callbacks(self, callbacks: list, arg: Any, label: str):
+        """Helper to safely dispatch callbacks inside a running event loop."""
+        try:
+            asyncio.get_running_loop()
+            for cb in callbacks:
+                task = asyncio.create_task(cb(arg))
                 self._pending_tasks.add(task)
                 
                 def _handle_done(t):
@@ -514,27 +668,14 @@ class PrinterController:
                     try:
                         t.result()
                     except Exception as e:
-                        logger.error(f"Telemetry callback failed: {e}")
+                        logger.error(f"{label} callback failed: {e}")
                 
                 task.add_done_callback(_handle_done)
-            except RuntimeError:
-                pass  # No running event loop (e.g., during shutdown)
+        except RuntimeError:
+            pass
+
+    def _safe_notify_telemetry(self):
+        self._dispatch_callbacks(self.telemetry_callbacks, self.get_state(), "Telemetry")
 
     def _emit_terminal(self, text: str):
-        """M6: Safely emit terminal text - tracks tasks and handles missing event loop."""
-        for cb in self.terminal_callbacks:
-            try:
-                asyncio.get_running_loop()
-                task = asyncio.create_task(cb(text))
-                self._pending_tasks.add(task)
-                
-                def _handle_done(t):
-                    self._pending_tasks.discard(t)
-                    try:
-                        t.result()
-                    except Exception as e:
-                        logger.error(f"Terminal callback failed: {e}")
-
-                task.add_done_callback(_handle_done)
-            except RuntimeError:
-                pass
+        self._dispatch_callbacks(self.terminal_callbacks, text, "Terminal")

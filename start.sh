@@ -8,4 +8,4 @@ if ! command -v uv &> /dev/null; then
 fi
 
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run python run.py

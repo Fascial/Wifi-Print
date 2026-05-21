@@ -6,7 +6,7 @@
     <title>Wireless Print</title>
     <meta name="description" content="Remote 3D printer management dashboard — monitor temperature, control motion, and stream G-Code over WiFi.">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
     <header>
@@ -64,6 +64,10 @@
 
             <!-- Print Actions -->
             <div class="print-actions">
+                <button id="btn-start" class="btn-action primary" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                    Start Print
+                </button>
                 <button id="btn-pause" class="btn-action secondary" disabled>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
                     Pause
@@ -79,8 +83,8 @@
             </div>
             
             <!-- File Upload -->
+            <input type="file" id="file-input" accept=".gcode" hidden>
             <section class="upload-zone" id="upload-zone">
-                <input type="file" id="file-input" accept=".gcode" hidden>
                 <div class="upload-content">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                     <p>Click or drag G-Code here to print</p>
@@ -97,7 +101,7 @@
                     <div class="temp-readout"><span id="temp-hotend-actual">0</span>° / <span id="temp-hotend-target">0</span>°</div>
                     <div class="temp-inputs">
                         <input type="number" id="input-hotend" placeholder="200" min="0" max="300">
-                        <button class="btn-set" onclick="setTemp('hotend')">Set</button>
+                        <button class="btn-set" id="btn-set-hotend">Set</button>
                     </div>
                 </div>
                 <div class="temp-box bed">
@@ -105,7 +109,7 @@
                     <div class="temp-readout"><span id="temp-bed-actual">0</span>° / <span id="temp-bed-target">0</span>°</div>
                     <div class="temp-inputs">
                         <input type="number" id="input-bed" placeholder="60" min="0" max="120">
-                        <button class="btn-set" onclick="setTemp('bed')">Set</button>
+                        <button class="btn-set" id="btn-set-bed">Set</button>
                     </div>
                 </div>
             </div>
@@ -115,14 +119,14 @@
                     <span class="label">Print Speed</span>
                     <div class="temp-inputs">
                         <input type="number" id="input-speed" placeholder="100" min="10" max="300" step="10">
-                        <button class="btn-set" onclick="setMultiplier('speed')">Set %</button>
+                        <button class="btn-set" id="btn-set-speed">Set %</button>
                     </div>
                 </div>
                 <div class="tuning-row">
                     <span class="label">Flow Rate</span>
                     <div class="temp-inputs">
                         <input type="number" id="input-flow" placeholder="100" min="10" max="200" step="10">
-                        <button class="btn-set" onclick="setMultiplier('flow')">Set %</button>
+                        <button class="btn-set" id="btn-set-flow">Set %</button>
                     </div>
                 </div>
             </div>
@@ -175,6 +179,6 @@
         </section>
     </main>
 
-    <script src="/static/app.js?v=2"></script>
+    <script src="/static/app.js?v=3"></script>
 </body>
 </html>

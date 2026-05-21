@@ -9,4 +9,5 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run python run.py
+

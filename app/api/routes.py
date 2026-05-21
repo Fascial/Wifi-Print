@@ -4,7 +4,7 @@ import os
 import aiofiles
 from typing import Dict, Any
 
-from app.core.models import ConnectRequest, CommandRequest
+from app.core.models import ConnectRequest, CommandRequest, PrinterState
 from app.core.printer_instance import printer
 
 router = APIRouter()
@@ -42,12 +42,15 @@ async def send_command(req: CommandRequest):
 
 @router.post("/api/upload")
 async def upload_gcode(file: UploadFile = File(...)):
+    if printer.state != PrinterState.IDLE:
+        return {"success": False, "error": "Printer is not idle. Cancel current print first."}
+
     if not file.filename.endswith('.gcode'):
         return {"success": False, "error": "Invalid file type. Must be .gcode"}
 
-    # H3: Streaming upload size check - streams to disk to avoid OOM
     filepath = os.path.join(UPLOAD_DIR, file.filename)
     total = 0
+    too_large = False
     try:
         async with aiofiles.open(filepath, 'wb') as out_file:
             while True:
@@ -56,21 +59,55 @@ async def upload_gcode(file: UploadFile = File(...)):
                     break
                 total += len(chunk)
                 if total > MAX_UPLOAD_BYTES:
-                    # Remove partial file
-                    out_file.close()
-                    os.remove(filepath)
-                    return {"success": False, "error": f"File too large. Max {MAX_UPLOAD_BYTES // (1024*1024)}MB."}
+                    too_large = True
+                    break
                 await out_file.write(chunk)
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         return {"success": False, "error": "Failed to save file."}
 
-    success = await printer.start_print(file.filename, filepath)
-    if not success:
+    if too_large:
         if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                logger.error(f"Failed to remove oversized file: {e}")
+        return {"success": False, "error": f"File too large. Max {MAX_UPLOAD_BYTES // (1024*1024)}MB."}
+
+    # Set as currently loaded file, do NOT start print automatically
+    printer.loaded_file = file.filename
+    printer.loaded_filepath = filepath
+    printer._safe_notify_telemetry()
+    return {"success": True, "filename": file.filename}
+
+@router.post("/api/control/start")
+async def control_start():
+    if not printer.loaded_file or not printer.loaded_filepath:
+        return {"success": False, "error": "No file loaded"}
+    
+    if printer.state != PrinterState.IDLE:
+        return {"success": False, "error": "Printer is not idle"}
+
+    success = await printer.start_print(printer.loaded_file, printer.loaded_filepath)
+    return {"success": success}
+
+@router.post("/api/control/unload")
+async def control_unload():
+    if printer.state != PrinterState.IDLE:
+        return {"success": False, "error": "Printer is not idle"}
+    
+    filepath = printer.loaded_filepath
+    printer.loaded_file = None
+    printer.loaded_filepath = None
+    printer._safe_notify_telemetry()
+    
+    if filepath and os.path.exists(filepath):
+        try:
             os.remove(filepath)
-        return {"success": False, "error": "Printer is not idle. Cancel current print first."}
-    return {"success": success, "filename": file.filename}
+        except Exception as e:
+            logger.error(f"Failed to delete unloaded file: {e}")
+            
+    return {"success": True}
 
 @router.post("/api/control/pause")
 async def control_pause():
